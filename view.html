@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title id="pageTitle">View Recording</title>
+    <style>
+        body { font-family: Arial, sans-serif; }
+        .container { width: 80%; margin: 0 auto; text-align: center; }
+        video { width: 100%; height: auto; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 id="headerTitle">View Recording</h1>
+        <video id="recordingVideo" controls></video>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/flv.js/dist/flv.min.js"></script>
+    <script>
+        function formatDate(timestamp) {
+            const date = new Date(timestamp * 1000);
+            return date.toLocaleString();
+        }
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const recordingName = urlParams.get('name');
+        if (recordingName) {
+            const video = document.getElementById('recordingVideo');
+            const videoSrc = `/getRecordings/${recordingName}`;
+            const nameParts = recordingName.split('-');
+            const streamName = nameParts[0];
+            const timestamp = nameParts[1].split('.')[0];
+            const formattedDate = formatDate(parseInt(timestamp));
+
+            document.getElementById('pageTitle').textContent = `${streamName} - ${formattedDate}`;
+            document.getElementById('headerTitle').textContent = `${streamName} - ${formattedDate}`;
+
+            if (recordingName.endsWith('.flv')) {
+                if (flvjs.isSupported()) {
+                    const flvPlayer = flvjs.createPlayer({
+                        type: 'flv',
+                        url: videoSrc
+                    });
+                    flvPlayer.attachMediaElement(video);
+                    flvPlayer.load();
+                } else {
+                    alert('FLV format not supported in this browser');
+                }
+            } else {
+                video.src = videoSrc;
+            }
+        } else {
+            alert('Recording name not specified');
+        }
+    </script>
+</body>
+</html>
