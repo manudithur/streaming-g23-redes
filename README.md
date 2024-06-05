@@ -7,7 +7,7 @@
 - Tobías Perry - 62064
 
 ## Introducción
-Este proyecto consiste en configurar un servidor de streaming RTMP capaz de manejar transmisiones tanto de multimedia. Incluye la capacidad de grabar sesiones, gestionar múltiples fuentes simultáneas en vivo y diferidas, monitorear las conexiones de los clientes y el uso de ancho de banda. También abarca una integración con HLS y una interfaz web básica.
+Este proyecto consiste en configurar un servidor de streaming RTMP capaz de manejar transmisiones tanto de multimedia. Incluye la capacidad de grabar sesiones, gestionar múltiples fuentes simultáneas en vivo y diferidas, monitorear las conexiones de los clientes y el uso de ancho de banda. También abarca una integración con HLS, una interfaz web básica y un modulo de estadisticas HLS.
 
 **IMPORTANTE**: Implementación especifica para Linux (Ubuntu 22.04)
 ## Instalar NGINX
@@ -40,7 +40,7 @@ La primera configuración de NGINX sera un servidor de streaming con solo el mó
 1. Localizar y Modificar el archivo ```nginx.conf``` en la carpeta ```/usr/local/nginx/conf```
 
 ```bash
-sudo nano /usr/local/nginx/conf/nginx.con
+sudo nano /usr/local/nginx/conf/nginx.conf
 ```
 Agregar el módulo RTMP arriba del módulo HTTP
 ```bash
@@ -64,8 +64,8 @@ sudo /usr/local/nginx/sbin/nginx
 ```
 Para reiniciar o apagar el servidor:
 ```bash
-sudo /usr/local/nginx/sbin/nginx -s stop
 sudo /usr/local/nginx/sbin/nginx -s reload
+sudo /usr/local/nginx/sbin/nginx -s stop
 ```
 Una vez iniciado el servidor ya se puede realizar un primer stream!
 
@@ -75,13 +75,13 @@ ip addr
 ```
 
 #### Realizar un stream
-Utilizando un cliente RTMP (Ej: OBS) configurar el stream:
+Utilizando un cliente de tramision RTMP (Ej: OBS) configurar el stream:
 - Host: ```rtmp://{host}/live``` (IP del servidor)
 - Stream key: ```nombre_stream```
 
 #### Visualizar stream
-Con algún cliente RTMP (Ej: VLC) visualiza el stream en la siguiente dirección:
-```RTMP://{host}/live/{nombre_stream}```
+Con algún cliente de visualizacion RTMP (Ej: VLC) visualiza el stream en la siguiente dirección:
+```rtmp://{host}/live/{nombre_stream}```
 
 ## Configurar grabacion
 En esta sección se configura la opción de grabación en el servidor:
@@ -92,8 +92,9 @@ sudo nano /usr/local/nginx/conf/nginx.conf
 ```
 
 Cambiar el usuario
-```user = www-data;```
-
+```bash
+user = www-data;
+```
 
 Agregar en el módulo RTMP la configuración de grabación. El módulo queda con la siguiente configuración:
 ```bash
@@ -245,7 +246,7 @@ curl localhost/stats
 
 También se pueden visualizar en un buscador web en ```http://{host}/stats```
 
-## Interfaz Web
+## Interfaz Web + HLS
 #### 1. Configurar protocolo HLS
 Para poder visualizar el stream en un buscador moderno, se debe configurar HLS (Http Live Stream) ya que RTMP es solo soportado por FLASH (Descontinuado el 31/12/2020).
 
@@ -276,6 +277,13 @@ rtmp {
 }
 ```
 
+Crear la carpeta ```/tmp/hls``` y ajustar los permisos.
+```bash
+sudo mkdir /tmp/hls
+sudo chown -R www-data:www-data /tmp/hls 
+sudo chmod -R 755 /tmp/hls
+```
+
 #### 2. Configurar enpoints HTTP
 Para servir los fragmentos HLS y las grabaciones debemos configurar los siguientes enpoints en ```nginx.conf```
 ```bash
@@ -286,28 +294,33 @@ Agregar los siguientes endpoint al modulo HTTP:
 http{
     #...
     
-    #Enpoint para servir fragmentos HLS
-    location /hls {
-        types {
-            application/vnd.apple.mpegurl m3u8;
-            video/mp2t ts;
+    server{
+        #...
+    
+        #Enpoint para servir fragmentos HLS
+        location /hls {
+            types {
+                application/vnd.apple.mpegurl m3u8;
+                video/mp2t ts;
+            }
+            alias /tmp/hls;
+            add_header Cache-Control no-cache;
         }
-        alias /tmp/hls;
-        add_header Cache-Control no-cache;
-    }
 
-    #Endpoints para conseguir las grabaciones
-    location ~ ^/getRecordings/?$ {
-        alias /var/rec/;
-        autoindex on;
-        autoindex_format json;
-    }
+        #Endpoints para conseguir las grabaciones
+        location ~ ^/getRecordings/?$ {
+            alias /var/rec/;
+            autoindex on;
+            autoindex_format json;
+        }
 
-    location /getRecordings/ {
-        alias /var/rec/;
-        try_files $uri =404;
+        location /getRecordings/ {
+            alias /var/rec/;
+            try_files $uri =404;
+        }
+        
+        #...
     }
-    #...
 
 }
 
@@ -320,3 +333,130 @@ Finalmente configuramos las paginas htm. En la carpeta ```/usr/local/nginx/html`
 -  ```view.html```: [contenido de view.html](view.html)
 -  ```joinStream.html```: [contenido de joinStream.html](joinStream.html)
 
+## Estadisticas HLS
+
+1. En el archivo ```nginx.conf``` agregar los logs personalizados para el enpoint HLS:
+
+```bash
+http {
+    #...
+
+    log_format hls_log '$remote_addr - $remote_user [$time_local] "$request" '
+                       '$status $body_bytes_sent "$http_referer" '
+                       '"$http_user_agent" "$http_x_forwarded_for" '
+                       '$request_time $body_bytes_sent $upstream_cache_status';
+
+    server {
+
+        #...
+
+        location /hls {
+            #...
+            access_log /usr/local/nginx/logs/hls.log hls_log;
+        }
+
+        #...
+
+    }
+}
+```
+
+2. Crear el archivo ```/usr/local/nginx/logs/hls.log``` y ajustar los permisos
+```bash
+sudo touch /usr/local/nginx/logs/hls.log
+sudo chmod 555 /usr/local/nginx/logs/hls.log
+```
+
+3. Crear el archivo para analizar los logs en el lugar que desees. Por ejemplo ```/usr/local/nginx/logs/analyze.sh``` con el siguiente contenido:
+```bash
+#!/bin/bash
+
+# Default log file location
+LOG_FILE="/usr/local/nginx/logs/hls.log"
+
+# Check if the time frame in seconds is provided as an argument
+if [ -z "$1" ]; then
+    echo "Usage: $0 <time_frame_in_seconds>"
+    exit 1
+fi
+
+TIME_FRAME=$1
+
+# Calculate the start and end times based on the current time and the provided time frame
+END_TIME=$(date "+%d/%b/%Y:%H:%M:%S")
+START_TIME=$(date -d "-$TIME_FRAME seconds" "+%d/%b/%Y:%H:%M:%S")
+
+# Extract relevant log entries within the specified time frame and ignore .m3u8 files
+LOG_ENTRIES=$(awk -v start="$START_TIME" -v end="$END_TIME" '{
+    time=$4
+    gsub(/[\[\]]/, "", time)
+    if (time >= start && time <= end && $7 !~ /\.m3u8$/) print $0
+}' "$LOG_FILE")
+
+# Check if LOG_ENTRIES is empty
+if [ -z "$LOG_ENTRIES" ]; then
+    echo "No log entries found in the specified time frame."
+    exit 0
+fi
+
+# Process log entries to aggregate data by stream
+process_log_entries() {
+    local log_entries=$1
+
+    # Declare associative arrays
+    declare -A viewers
+    declare -A bytes_sent
+
+    while IFS= read -r entry; do
+        # Extract stream name and IP address
+        stream=$(echo "$entry" | grep -oP '/hls/\K[^-]*')
+        ip=$(echo "$entry" | awk '{print $1}')
+        bytes=$(echo "$entry" | awk '{print $10}')
+
+        # Aggregate unique viewers by IP
+        viewers["$stream,$ip"]=1
+
+        # Aggregate bytes sent
+        bytes_sent["$stream"]=$((bytes_sent["$stream"] + bytes))
+    done <<< "$log_entries"
+
+    # Aggregate unique viewers per stream
+    declare -A unique_viewers_per_stream
+    for key in "${!viewers[@]}"; do
+        stream=$(echo "$key" | awk -F',' '{print $1}')
+        unique_viewers_per_stream["$stream"]=$((unique_viewers_per_stream["$stream"] + 1))
+    done
+
+    for stream in "${!unique_viewers_per_stream[@]}"; do
+        unique_viewers=${unique_viewers_per_stream["$stream"]}
+        total_bytes=${bytes_sent["$stream"]}
+        echo "Stream: $stream"
+        echo "Unique Viewers: $unique_viewers"
+        echo "Bytes Sent: $total_bytes"
+        echo "-------------------------"
+    done
+}
+
+process_log_entries "$LOG_ENTRIES"
+```
+
+4. Otorgar permisos de ejecucion y ejecutar para visualizar estadisticas HLS:
+```bash
+sudo chmod +x /usr/local/nginx/logs/analyze.sh
+sudo ./usr/local/nginx/logs/analyze.sh
+```
+
+## Resumen
+Los archivos finalmente deberian quedar de la siguiente manera.
+
+Configuracion NGINX:
+- ```nginx.conf```: [contenido de nginx.conf](nginx.conf)
+
+Pantallas:
+- ```stat.xsl```: [contenido de stat.xsl](stat.xsl)
+-  ```index.html```: [contenido de index.html](index.html)
+-  ```view.html```: [contenido de view.html](view.html)
+-  ```joinStream.html```: [contenido de joinStream.html](joinStream.html)
+
+Estadisticas HLS:
+- ```analyze.sh```: [contenido de analyze.sh](analyze.sh)
